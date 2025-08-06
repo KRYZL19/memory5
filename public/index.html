@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Memory Spiel mit Custom Images</title>
+  <script src="https://cdn.socket.io/4.8.0/socket.io.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f5f5f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin:0; }
+    .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); width: 90%; max-width: 500px; }
+    h2 { text-align: center; }
+    .inputs { display: flex; flex-direction: column; gap: 10px; }
+    #game-board { display: grid; gap: 10px; margin-top: 15px; }
+    .card { aspect-ratio: 1/1; perspective: 1000px; cursor: pointer; position: relative; }
+    .card-inner { width: 100%; height: 100%; transition: transform 0.6s; transform-style: preserve-3d; position: relative; }
+    .card.flipped .card-inner { transform: rotateY(180deg); }
+    .card-front, .card-back { position: absolute; width: 100%; height: 100%; border-radius: 10px; backface-visibility: hidden; }
+    .card-front { background: #3498db; color: white; font-size: 2rem; display: flex; align-items: center; justify-content: center; }
+    .card-back { transform: rotateY(180deg); background-size: cover; background-position: center; }
+    #chat { border:1px solid #ddd; height:100px; overflow-y:auto; margin-top:10px; padding:5px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>Memory Spiel</h2>
+    <div class="inputs">
+      <input type="text" id="roomId" placeholder="Raum-ID">
+      <input type="text" id="playerName" placeholder="Dein Name">
+      <select id="turnTime">
+        <option value="10">Zugzeit: 10s</option>
+        <option value="15">Zugzeit: 15s</option>
+        <option value="20">Zugzeit: 20s</option>
+      </select>
+      <select id="pairCount">
+        <option value="8">8 Paare</option>
+        <option value="10">10 Paare</option>
+        <option value="12">12 Paare</option>
+        <option value="14">14 Paare</option>
+        <option value="16">16 Paare</option>
+        <option value="18">18 Paare</option>
+        <option value="20">20 Paare</option>
+      </select>
+      <label>Bilder hochladen (optional):</label>
+      <input type="file" id="customImages" multiple accept="image/*">
+      <button onclick="uploadImages()">Bilder hochladen</button>
+      <button onclick="createRoom()">Raum erstellen</button>
+      <button onclick="joinRoom()">Raum beitreten</button>
+    </div>
+    <div id="info"></div>
+    <div id="score"></div>
+    <div id="game-board"></div>
+    <div id="winner"></div>
+    <div id="chat"></div>
+    <input type="text" id="chatMessage" placeholder="Chat-Nachricht...">
+    <button onclick="sendMessage()">Senden</button>
+  </div>
+
+  <script>
+    const socket = io();
+    let playerId, currentRoomId = null;
+    let uploadedImages = [];
+
+    socket.on('connect', () => { playerId = socket.id; });
+
+    async function uploadImages() {
+      const files = document.getElementById('customImages').files;
+      if (!files.length) { alert('Keine Bilder ausgewählt.'); return; }
+      const formData = new FormData();
+      Array.from(files).forEach(f => formData.append('images', f));
+
+      const res = await fetch('/upload', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.success) {
+        uploadedImages = data.filenames;
+        alert('Bilder hochgeladen: ' + uploadedImages.length);
+      }
+    }
+
+    function createRoom() {
+      const roomId = document.getElementById('roomId').value.trim();
+      const playerName = document.getElementById('playerName').value.trim();
+      const turnTime = document.getElementById('turnTime').value;
+      const pairCount = parseInt(document.getElementById('pairCount').value);
+      if (roomId && playerName) socket.emit('createRoom', { roomId, playerName, turnTime, customImages: uploadedImages, pairCount });
+    }
+
+    function joinRoom() {
+      const roomId = document.getElementById('roomId').value.trim();
+      const playerName = document.getElementById('playerName').value.trim();
+      if (roomId && playerName) socket.emit('joinRoom', { roomId, playerName });
+    }
+
+    function sendMessage() {
+      const msg = document.getElementById('chatMessage').value.trim();
+      if (msg && currentRoomId) {
+        socket.emit('sendChatMessage', { roomId: currentRoomId, name: document.getElementById('playerName').value.trim(), message: msg });
+        document.getElementById('chatMessage').value = '';
+      }
+    }
+
+    socket.on('roomCreated', roomId => { currentRoomId = roomId; document.getElementById('info').innerText = `Raum erstellt: ${roomId}`; });
+    socket.on('playerJoined', players => { document.getElementById('info').innerText = 'Spieler: ' + players.map(p => p.name).join(', '); if (!currentRoomId) currentRoomId = document.getElementById('roomId').value.trim(); });
+    socket.on('gameStart', ({ cards, currentTurn, players, roomId, pairCount }) => { 
+      currentRoomId = roomId; 
+      renderBoard(cards, currentTurn, pairCount); 
+      updateScore(players); 
+    });
+    socket.on('gameUpdate', ({ cards, currentTurn, players, pairCount }) => { 
+      renderBoard(cards, currentTurn, pairCount); 
+      updateScore(players); 
+    });
+    socket.on('gameEnd', ({ winner }) => { document.getElementById('winner').innerText = winner === 'Unentschieden' ? '🤝 Unentschieden!' : `🏆 ${winner} hat gewonnen!`; });
+    socket.on('chatHistory', msgs => { const chat = document.getElementById('chat'); chat.innerHTML = ''; msgs.forEach(m => appendChat(m)); });
+    socket.on('newChatMessage', m => appendChat(m));
+
+    function appendChat({ name, message, time }) {
+      const chat = document.getElementById('chat');
+      chat.innerHTML += `<div><strong>${time} ${name}:</strong> ${message}</div>`;
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    function renderBoard(cards, currentTurn, pairCount) {
+      const board = document.getElementById('game-board');
+      board.innerHTML = '';
+
+      // Dynamische Spaltenanzahl basierend auf Kartenpaaren
+      const cols = pairCount <= 10 ? 4 : pairCount <= 14 ? 5 : 6;
+      board.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+
+      cards.forEach(card => {
+        const wrapper = document.createElement('div');
+        wrapper.className = `card ${card.isFlipped || card.isMatched ? 'flipped' : ''}`;
+        const inner = document.createElement('div');
+        inner.className = 'card-inner';
+        const front = document.createElement('div');
+        front.className = 'card-front';
+        front.textContent = '?';
+        const back = document.createElement('div');
+        back.className = 'card-back';
+        back.style.backgroundImage = `url(${card.image})`;
+        inner.appendChild(front);
+        inner.appendChild(back);
+        wrapper.appendChild(inner);
+        if (currentTurn === playerId && !card.isFlipped && !card.isMatched) {
+          wrapper.addEventListener('click', () => socket.emit('flipCard', { roomId: currentRoomId, cardId: card.id }));
+        }
+        board.appendChild(wrapper);
+      });
+    }
+
+    function updateScore(players) {
+      document.getElementById('score').innerText = players.map(p => `${p.name}: ${p.score}`).join(' | ');
+    }
+  </script>
+</body>
+</html>
