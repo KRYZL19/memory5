@@ -1,14 +1,16 @@
 {
-    "name": "memory-game",
-    "version": "1.0.0",
-    "description": "Ein Online-Memoryspiel für zwei Spieler",
-    "main": "server.js",
-    "scripts": {
-        "start": "node server.js"
-    },
-    "dependencies": {
-        "express": "^4.21.2",
-        "socket.io": "^4.5.0",
-        "sockethub": "^4.1.0"
-    }
+  "name": "memory-game",
+  "version": "1.0.0",
+  "description": "Multiplayer Memory Spiel mit Custom Images",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "author": "Dim",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.8.1",
+    "multer": "^1.4.5-lts.1"
+  }
 }
