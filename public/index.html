@@ -3,27 +3,37 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Memory Spiel mit Custom Images</title>
+  <title>Memory Spiel Deluxe</title>
   <script src="https://cdn.socket.io/4.8.0/socket.io.min.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; background: #f5f5f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin:0; }
-    .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); width: 90%; max-width: 500px; }
+    body { font-family: Arial, sans-serif; background: #f5f5f5; margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh; }
+    .container { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); width: 95%; max-width: 500px; }
     h2 { text-align: center; }
-    .inputs { display: flex; flex-direction: column; gap: 10px; }
+    .inputs { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+    input, select, button { padding: 10px; font-size: 16px; border-radius: 8px; border: 1px solid #ccc; }
+    button { cursor: pointer; border: none; }
+    .btn-create { background: #3498db; color: white; }
+    .btn-join { background: #2ecc71; color: white; }
+    #uploadStatus { margin-top: 5px; font-size: 14px; }
+    #progressBar { width: 100%; height: 10px; background: #eee; border-radius: 5px; margin-top: 5px; overflow: hidden; display:none; }
+    #progressFill { height: 100%; width: 0; background: #3498db; transition: width 0.2s; }
+    #imagePreview { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+    #imagePreview img { width: 50px; height: 50px; object-fit: cover; border-radius: 6px; border: 1px solid #ccc; }
+    #info, #score, #winner { text-align: center; margin-top: 10px; font-weight: bold; }
     #game-board { display: grid; gap: 10px; margin-top: 15px; }
     .card { aspect-ratio: 1/1; perspective: 1000px; cursor: pointer; position: relative; }
-    .card-inner { width: 100%; height: 100%; transition: transform 0.6s; transform-style: preserve-3d; position: relative; }
+    .card-inner { width: 100%; height: 100%; transition: transform 0.6s; transform-style: preserve-3d; }
     .card.flipped .card-inner { transform: rotateY(180deg); }
-    .card-front, .card-back { position: absolute; width: 100%; height: 100%; border-radius: 10px; backface-visibility: hidden; }
-    .card-front { background: #3498db; color: white; font-size: 2rem; display: flex; align-items: center; justify-content: center; }
+    .card-front, .card-back { position: absolute; width: 100%; height: 100%; border-radius: 8px; backface-visibility: hidden; }
+    .card-front { background: #3498db; display: flex; align-items: center; justify-content: center; color: white; font-size: 1.8rem; }
     .card-back { transform: rotateY(180deg); background-size: cover; background-position: center; }
-    #chat { border:1px solid #ddd; height:100px; overflow-y:auto; margin-top:10px; padding:5px; }
+    #chat { border: 1px solid #ddd; height: 100px; overflow-y: auto; margin-top: 10px; padding: 5px; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h2>Memory Spiel</h2>
-    <div class="inputs">
+    <h2>Memory Spiel Deluxe</h2>
+    <div class="inputs" id="buttons">
       <input type="text" id="roomId" placeholder="Raum-ID">
       <input type="text" id="playerName" placeholder="Dein Name">
       <select id="turnTime">
@@ -43,8 +53,11 @@
       <label>Bilder hochladen (optional):</label>
       <input type="file" id="customImages" multiple accept="image/*">
       <button onclick="uploadImages()">Bilder hochladen</button>
-      <button onclick="createRoom()">Raum erstellen</button>
-      <button onclick="joinRoom()">Raum beitreten</button>
+      <div id="uploadStatus"></div>
+      <div id="progressBar"><div id="progressFill"></div></div>
+      <div id="imagePreview"></div>
+      <button class="btn-create" onclick="createRoom()">Raum erstellen</button>
+      <button class="btn-join" onclick="joinRoom()">Raum beitreten</button>
     </div>
     <div id="info"></div>
     <div id="score"></div>
@@ -64,15 +77,64 @@
 
     async function uploadImages() {
       const files = document.getElementById('customImages').files;
-      if (!files.length) { alert('Keine Bilder ausgewählt.'); return; }
-      const formData = new FormData();
-      Array.from(files).forEach(f => formData.append('images', f));
+      const status = document.getElementById('uploadStatus');
+      const preview = document.getElementById('imagePreview');
+      const progressBar = document.getElementById('progressBar');
+      const progressFill = document.getElementById('progressFill');
+      preview.innerHTML = '';
+      status.textContent = '';
 
-      const res = await fetch('/upload', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (data.success) {
-        uploadedImages = data.filenames;
-        alert('Bilder hochgeladen: ' + uploadedImages.length);
+      if (!files.length) {
+        status.style.color = 'red';
+        status.textContent = '⚠️ Keine Bilder ausgewählt.';
+        return;
+      }
+
+      const formData = new FormData();
+      Array.from(files).forEach(file => formData.append('images', file));
+
+      try {
+        progressBar.style.display = 'block';
+        progressFill.style.width = '0%';
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/upload', true);
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            progressFill.style.width = `${percent}%`;
+          }
+        };
+
+        xhr.onload = () => {
+          progressBar.style.display = 'none';
+          if (xhr.status === 200) {
+            const data = JSON.parse(xhr.responseText);
+            if (data.success) {
+              uploadedImages = data.filenames;
+              status.style.color = 'green';
+              status.textContent = `✅ Upload erfolgreich: ${uploadedImages.length} Bilder.`;
+              uploadedImages.forEach(img => {
+                const imgElem = document.createElement('img');
+                imgElem.src = img;
+                preview.appendChild(imgElem);
+              });
+            } else {
+              status.style.color = 'red';
+              status.textContent = '❌ Fehler beim Upload.';
+            }
+          } else {
+            status.style.color = 'red';
+            status.textContent = '❌ Fehler beim Server.';
+          }
+        };
+
+        xhr.send(formData);
+      } catch (err) {
+        console.error('Upload Fehler:', err);
+        status.style.color = 'red';
+        status.textContent = '❌ Fehler beim Server-Upload.';
       }
     }
 
@@ -100,15 +162,8 @@
 
     socket.on('roomCreated', roomId => { currentRoomId = roomId; document.getElementById('info').innerText = `Raum erstellt: ${roomId}`; });
     socket.on('playerJoined', players => { document.getElementById('info').innerText = 'Spieler: ' + players.map(p => p.name).join(', '); if (!currentRoomId) currentRoomId = document.getElementById('roomId').value.trim(); });
-    socket.on('gameStart', ({ cards, currentTurn, players, roomId, pairCount }) => { 
-      currentRoomId = roomId; 
-      renderBoard(cards, currentTurn, pairCount); 
-      updateScore(players); 
-    });
-    socket.on('gameUpdate', ({ cards, currentTurn, players, pairCount }) => { 
-      renderBoard(cards, currentTurn, pairCount); 
-      updateScore(players); 
-    });
+    socket.on('gameStart', ({ cards, currentTurn, players, roomId, pairCount }) => { currentRoomId = roomId; renderBoard(cards, currentTurn, pairCount); updateScore(players); });
+    socket.on('gameUpdate', ({ cards, currentTurn, players, pairCount }) => { renderBoard(cards, currentTurn, pairCount); updateScore(players); });
     socket.on('gameEnd', ({ winner }) => { document.getElementById('winner').innerText = winner === 'Unentschieden' ? '🤝 Unentschieden!' : `🏆 ${winner} hat gewonnen!`; });
     socket.on('chatHistory', msgs => { const chat = document.getElementById('chat'); chat.innerHTML = ''; msgs.forEach(m => appendChat(m)); });
     socket.on('newChatMessage', m => appendChat(m));
@@ -122,8 +177,6 @@
     function renderBoard(cards, currentTurn, pairCount) {
       const board = document.getElementById('game-board');
       board.innerHTML = '';
-
-      // Dynamische Spaltenanzahl basierend auf Kartenpaaren
       const cols = pairCount <= 10 ? 4 : pairCount <= 14 ? 5 : 6;
       board.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
 
