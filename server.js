@@ -3,12 +3,21 @@ const app = express();
 const http = require('http').createServer(app);
 const io = require('socket.io')(http, { cors: { origin: '*' } });
 const multer = require('multer');
+const fs = require('fs');
 const path = require('path');
+
+// Stelle sicher, dass das Upload-Verzeichnis existiert
+const uploadDir = path.join(__dirname, 'public', 'uploads');
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+    console.log("📂 Upload-Verzeichnis erstellt:", uploadDir);
+}
 
 app.use(express.static('public'));
 
+// Multer-Setup für Uploads
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, 'public/uploads'),
+    destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
 });
 const upload = multer({
@@ -20,17 +29,24 @@ const upload = multer({
     }
 });
 
+// Upload-Route
 app.post('/upload', upload.array('images', 20), (req, res) => {
-    if (!req.files || req.files.length === 0) {
-        console.log(`[UPLOAD] Kein Bild empfangen.`);
-        return res.status(400).json({ success: false, message: 'Keine Dateien hochgeladen.' });
+    try {
+        if (!req.files || req.files.length === 0) {
+            console.log(`[UPLOAD] ❌ Kein Bild empfangen.`);
+            return res.status(400).json({ success: false, message: 'Keine Dateien hochgeladen.' });
+        }
+        const files = req.files.map(f => `/uploads/${f.filename}`);
+        console.log(`[UPLOAD] ✅ ${files.length} Bilder hochgeladen:`, files);
+        res.json({ success: true, filenames: files });
+    } catch (err) {
+        console.error(`[UPLOAD ERROR]:`, err.message);
+        res.status(500).json({ success: false, message: 'Serverfehler beim Upload.' });
     }
-    const files = req.files.map(f => `/uploads/${f.filename}`);
-    console.log(`[UPLOAD] ${files.length} Bilder hochgeladen:`, files);
-    res.json({ success: true, filenames: files });
 });
 
-const images = Array.from({ length: 45 }, (_, i) => `/images/bild${i+1}.jpg`);
+// Standardbilder
+const images = Array.from({ length: 45 }, (_, i) => `/images/bild${i + 1}.jpg`);
 const rooms = new Map();
 
 function getRandomImages(count) {
@@ -40,11 +56,19 @@ function getRandomImages(count) {
 io.on('connection', (socket) => {
     console.log(`🔌 [CONNECT] Spieler verbunden: ${socket.id}`);
 
+    // Raum erstellen
     socket.on('createRoom', ({ roomId, playerName, turnTime, customImages = [], pairCount = 8 }) => {
-        if (!roomId || !playerName || !turnTime) return socket.emit('joinError', 'Alle Felder erforderlich.');
-        if (rooms.has(roomId)) return socket.emit('joinError', 'Raum-ID vergeben.');
+        console.log(`[CREATE] Anfrage:`, { roomId, playerName, turnTime, pairCount });
 
-        console.log(`[ROOM CREATE] ${playerName} erstellt Raum ${roomId} mit ${pairCount} Paaren.`);
+        if (!roomId || !playerName || !turnTime) {
+            console.log(`[CREATE ERROR] Fehlende Felder.`);
+            return socket.emit('joinError', 'Alle Felder erforderlich.');
+        }
+        if (rooms.has(roomId)) {
+            console.log(`[CREATE ERROR] Raum-ID existiert bereits: ${roomId}`);
+            return socket.emit('joinError', 'Raum-ID bereits vergeben.');
+        }
+
         rooms.set(roomId, {
             players: [{ id: socket.id, name: playerName, score: 0 }],
             cards: [],
@@ -56,11 +80,15 @@ io.on('connection', (socket) => {
             customImages,
             pairCount: parseInt(pairCount)
         });
+
         socket.join(roomId);
         socket.emit('roomCreated', roomId);
+        console.log(`[CREATE SUCCESS] Raum ${roomId} erstellt von ${playerName}`);
     });
 
+    // Raum beitreten
     socket.on('joinRoom', ({ roomId, playerName }) => {
+        console.log(`[JOIN] Spieler ${playerName} versucht Raum ${roomId} zu joinen.`);
         const room = rooms.get(roomId);
         if (!room) return socket.emit('joinError', 'Raum nicht gefunden.');
         if (room.players.length >= 2) return socket.emit('joinError', 'Raum voll.');
@@ -68,15 +96,18 @@ io.on('connection', (socket) => {
         room.players.push({ id: socket.id, name: playerName, score: 0 });
         socket.join(roomId);
         io.to(roomId).emit('playerJoined', room.players);
-        console.log(`[ROOM JOIN] ${playerName} ist Raum ${roomId} beigetreten.`);
+        console.log(`[JOIN SUCCESS] ${playerName} ist Raum ${roomId} beigetreten.`);
         if (room.players.length === 2) startGame(roomId);
     });
 
+    // Spiel starten
     function startGame(roomId) {
         const room = rooms.get(roomId);
+        if (!room) return;
+
         const needed = room.pairCount;
         const custom = room.customImages || [];
-        const filledImages = custom.length >= needed 
+        const filledImages = custom.length >= needed
             ? [...custom].sort(() => 0.5 - Math.random()).slice(0, needed)
             : [...custom, ...getRandomImages(needed - custom.length)];
 
@@ -84,10 +115,12 @@ io.on('connection', (socket) => {
         room.cards = cardPairs.map((img, i) => ({ id: i, image: img, isFlipped: false, isMatched: false }));
         room.currentTurn = room.players[0].id;
         room.gameStarted = true;
+
         io.to(roomId).emit('gameStart', { cards: room.cards, currentTurn: room.currentTurn, players: room.players, roomId, pairCount: needed });
-        console.log(`[GAME START] Raum ${roomId} gestartet.`);
+        console.log(`[GAME START] Raum ${roomId} mit ${needed} Paaren gestartet.`);
     }
 
+    // Karte flippen
     socket.on('flipCard', ({ roomId, cardId }) => {
         const room = rooms.get(roomId);
         if (!room || !room.gameStarted || room.locked) return;
@@ -120,6 +153,7 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Spiel beenden
     function endGame(roomId) {
         const room = rooms.get(roomId);
         const [p1, p2] = room.players;
@@ -129,6 +163,7 @@ io.on('connection', (socket) => {
         rooms.delete(roomId);
     }
 
+    // Chat
     socket.on('sendChatMessage', ({ roomId, name, message }) => {
         const room = rooms.get(roomId);
         if (!room) return;
@@ -138,6 +173,7 @@ io.on('connection', (socket) => {
         console.log(`[CHAT] ${name}: ${message}`);
     });
 
+    // Disconnect
     socket.on('disconnect', () => {
         for (const [roomId, room] of rooms) {
             const idx = room.players.findIndex(p => p.id === socket.id);
@@ -145,7 +181,7 @@ io.on('connection', (socket) => {
                 const leftPlayer = room.players[idx].name;
                 room.players.splice(idx, 1);
                 io.to(roomId).emit('playerLeft', room.players);
-                console.log(`[DISCONNECT] Spieler ${leftPlayer} hat Raum ${roomId} verlassen.`);
+                console.log(`[DISCONNECT] ${leftPlayer} hat Raum ${roomId} verlassen.`);
                 if (room.players.length === 0) rooms.delete(roomId);
             }
         }
